@@ -1,11 +1,13 @@
 package com.blankj.utilcode.util;
 
 import android.annotation.SuppressLint;
+import android.app.Notification;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -48,8 +50,7 @@ public class MessengerUtils {
                 Log.i("MessengerUtils", "Server service is running.");
                 return;
             }
-            Intent intent = new Intent(Utils.getApp(), ServerService.class);
-            Utils.getApp().startService(intent);
+            startServiceCompat(new Intent(Utils.getApp(), ServerService.class));
             return;
         }
         if (sLocalClient == null) {
@@ -92,12 +93,14 @@ public class MessengerUtils {
     }
 
     public static void unregister(final String pkgName) {
-        if (sClientMap.containsKey(pkgName)) {
-            Client client = sClientMap.get(pkgName);
-            sClientMap.remove(pkgName);
-            client.unbind();
-        } else {
+        if (!sClientMap.containsKey(pkgName)) {
             Log.i("MessengerUtils", "unregister: client didn't register: " + pkgName);
+            return;
+        }
+        Client client = sClientMap.get(pkgName);
+        sClientMap.remove(pkgName);
+        if (client != null) {
+            client.unbind();
         }
     }
 
@@ -116,10 +119,23 @@ public class MessengerUtils {
         } else {
             Intent intent = new Intent(Utils.getApp(), ServerService.class);
             intent.putExtras(data);
-            Utils.getApp().startService(intent);
+            startServiceCompat(intent);
         }
         for (Client client : sClientMap.values()) {
             client.sendMsg2Server(data);
+        }
+    }
+
+    private static void startServiceCompat(Intent intent) {
+        try {
+            intent.setFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Utils.getApp().startForegroundService(intent);
+            } else {
+                Utils.getApp().startService(intent);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -133,13 +149,12 @@ public class MessengerUtils {
             @Override
             public void handleMessage(Message msg) {
                 Bundle data = msg.getData();
-                if (data != null) {
-                    String key = data.getString(KEY_STRING);
-                    if (key != null) {
-                        MessageCallback callback = subscribers.get(key);
-                        if (callback != null) {
-                            callback.messageCall(data);
-                        }
+                data.setClassLoader(MessengerUtils.class.getClassLoader());
+                String key = data.getString(KEY_STRING);
+                if (key != null) {
+                    MessageCallback callback = subscribers.get(key);
+                    if (callback != null) {
+                        callback.messageCall(data);
                     }
                 }
             }
@@ -153,11 +168,12 @@ public class MessengerUtils {
                 mServer = new Messenger(service);
                 int key = UtilsBridge.getCurrentProcessName().hashCode();
                 Message msg = Message.obtain(mReceiveServeMsgHandler, WHAT_SUBSCRIBE, key, 0);
+                msg.getData().setClassLoader(MessengerUtils.class.getClassLoader());
                 msg.replyTo = mClient;
                 try {
                     mServer.send(msg);
                 } catch (RemoteException e) {
-                    Log.e("MessengerUtils", "onServiceConnected: ", e);
+                    e.printStackTrace();
                 }
                 sendCachedMsg2Server();
             }
@@ -203,7 +219,7 @@ public class MessengerUtils {
             try {
                 mServer.send(msg);
             } catch (RemoteException e) {
-                Log.e("MessengerUtils", "unbind: ", e);
+                e.printStackTrace();
             }
             try {
                 Utils.getApp().unbindService(mConn);
@@ -233,13 +249,14 @@ public class MessengerUtils {
 
         private boolean send2Server(Bundle bundle) {
             Message msg = Message.obtain(mReceiveServeMsgHandler, WHAT_SEND);
+            bundle.setClassLoader(MessengerUtils.class.getClassLoader());
             msg.setData(bundle);
             msg.replyTo = mClient;
             try {
                 mServer.send(msg);
                 return true;
             } catch (RemoteException e) {
-                Log.e("MessengerUtils", "send2Server: ", e);
+                e.printStackTrace();
                 return false;
             }
         }
@@ -280,6 +297,12 @@ public class MessengerUtils {
 
         @Override
         public int onStartCommand(Intent intent, int flags, int startId) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification notification = UtilsBridge.getNotification(
+                        NotificationUtils.ChannelConfig.DEFAULT_CHANNEL_CONFIG, null
+                );
+                startForeground(1, notification);
+            }
             if (intent != null) {
                 Bundle extras = intent.getExtras();
                 if (extras != null) {
